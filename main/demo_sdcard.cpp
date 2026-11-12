@@ -1,10 +1,7 @@
 #include "demo_sdcard.h"
 
 #include <cerrno>
-#include <cstdio>
-#include <cstring>
 #include <dirent.h>
-#include <sys/stat.h>
 
 #include "driver/gpio.h"
 #include "driver/spi_common.h"
@@ -17,6 +14,7 @@
 #include "sdmmc_cmd.h"
 
 static const char *TAG = "demo_sdcard";
+static esp_err_t s_cleanup_error = ESP_OK;
 static constexpr const char *kMountPoint = "/sdcard";
 
 // The MicroSD card and e-paper display share SPI2 SCK/MOSI/MISO.
@@ -30,79 +28,50 @@ static esp_err_t configure_sd_idle_state()
     output_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
     output_cfg.intr_type = GPIO_INTR_DISABLE;
     esp_err_t ret = gpio_config(&output_cfg);
-    if (ret != ESP_OK) return ret;
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
-    ret = gpio_set_level(static_cast<gpio_num_t>(PIN_SD_EN), 1);
-    if (ret != ESP_OK) return ret;
-    return gpio_set_level(static_cast<gpio_num_t>(PIN_SD_CS), 1);
+    ret = gpio_set_level(static_cast<gpio_num_t>(PIN_SD_CS), 1);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return gpio_set_level(static_cast<gpio_num_t>(PIN_SD_EN), 1);
 }
 
-static void list_root_directory()
+// Probe one directory entry only. No file preparation, counting or recursive scan.
+static esp_err_t probe_root_directory()
 {
-    ESP_LOGI(TAG, "Files in MicroSD root directory:");
     DIR *directory = opendir(kMountPoint);
     if (directory == nullptr) {
-        ESP_LOGE(TAG, "Failed to open %s: errno=%d (%s)",
-                 kMountPoint, errno, std::strerror(errno));
-        return;
+        ESP_LOGE(TAG, "Root directory open failed: errno=%d", errno);
+        return ESP_FAIL;
     }
-
-    int entry_count = 0;
-    dirent *entry = nullptr;
-    while ((entry = readdir(directory)) != nullptr) {
-        char path[288] = {};
-        std::snprintf(path, sizeof(path), "%s/%s", kMountPoint, entry->d_name);
-
-        struct stat file_stat = {};
-        if (stat(path, &file_stat) == 0) {
-            ESP_LOGI(TAG, "  %s  %s  %ld bytes",
-                     S_ISDIR(file_stat.st_mode) ? "DIR " : "FILE",
-                     entry->d_name,
-                     static_cast<long>(file_stat.st_size));
-        } else {
-            ESP_LOGI(TAG, "  %s", entry->d_name);
-        }
-        ++entry_count;
+    errno = 0;
+    const dirent *entry = readdir(directory);
+    const int read_error = errno;
+    const bool empty = entry == nullptr && read_error == 0;
+    const int close_result = closedir(directory);
+    if (read_error != 0 || close_result != 0) {
+        ESP_LOGE(TAG, "Root directory read/close failed: errno=%d", read_error);
+        return ESP_FAIL;
     }
-
-    closedir(directory);
-    ESP_LOGI(TAG, "Root directory entries: %d", entry_count);
+    ESP_LOGI(TAG, "Root directory readable%s", empty ? " (empty)" : " (entry available)");
+    return ESP_OK;
 }
 
-static void read_test_file()
-{
-    constexpr const char *kFilePath = "/sdcard/TEST.TXT";
-    FILE *file = std::fopen(kFilePath, "rb");
-    if (file == nullptr) {
-        ESP_LOGW(TAG, "Unable to open %s: errno=%d (%s)",
-                 kFilePath, errno, std::strerror(errno));
-        return;
-    }
-
-    char read_buffer[257] = {};
-    const size_t bytes_read = std::fread(read_buffer, 1, sizeof(read_buffer) - 1, file);
-    const bool read_error = std::ferror(file) != 0;
-    std::fclose(file);
-    read_buffer[bytes_read] = '\0';
-
-    if (read_error) {
-        ESP_LOGE(TAG, "Failed while reading %s", kFilePath);
-        return;
-    }
-
-    ESP_LOGI(TAG, "Read %u bytes from %s", static_cast<unsigned>(bytes_read), kFilePath);
-    ESP_LOGI(TAG, "TEST.TXT content:\n%s", read_buffer);
-}
-
-void demo_sdcard_run()
+esp_err_t demo_sdcard_run()
 {
     ESP_LOGI(TAG, "=== MicroSD Demo Start ===");
 
+    if (s_cleanup_error != ESP_OK) {
+        return s_cleanup_error;
+    }
     esp_err_t ret = configure_sd_idle_state();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "MicroSD idle state setup failed: %s", esp_err_to_name(ret));
         ESP_LOGI(TAG, "=== MicroSD Demo End ===");
-        return;
+        return ret;
     }
 
     gpio_config_t detect_cfg = {};
@@ -115,27 +84,18 @@ void demo_sdcard_run()
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "MicroSD detect pin setup failed: %s", esp_err_to_name(ret));
         ESP_LOGI(TAG, "=== MicroSD Demo End ===");
-        return;
+        return ret;
     }
     vTaskDelay(pdMS_TO_TICKS(100));
 
     if (gpio_get_level(static_cast<gpio_num_t>(PIN_SD_DETECT)) != 0) {
         ESP_LOGW(TAG, "No MicroSD card detected");
         ESP_LOGI(TAG, "=== MicroSD Demo End ===");
-        return;
+        return ESP_ERR_NOT_FOUND;
     }
 
-    spi_bus_config_t bus_cfg = {};
-    bus_cfg.mosi_io_num = PIN_SD_MOSI;
-    bus_cfg.miso_io_num = PIN_SD_MISO;
-    bus_cfg.sclk_io_num = PIN_SD_CLK;
-    bus_cfg.quadwp_io_num = -1;
-    bus_cfg.quadhd_io_num = -1;
-    bus_cfg.max_transfer_sz = 4096;
-    ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
-
     sdmmc_card_t *card = nullptr;
-    if (ret == ESP_OK) {
+    {
         sdmmc_host_t host = SDSPI_HOST_DEFAULT();
         host.slot = SPI2_HOST;
         sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
@@ -149,22 +109,29 @@ void demo_sdcard_run()
     }
 
     if (ret == ESP_OK) {
-        sdmmc_card_print_info(stdout, card);
-        list_root_directory();
-        read_test_file();
-        esp_vfs_fat_sdcard_unmount(kMountPoint, card);
+        const uint64_t capacity_mib =
+            static_cast<uint64_t>(card->csd.capacity) * card->csd.sector_size / (1024 * 1024);
+        ESP_LOGI(TAG, "Mounted, capacity=%llu MiB", static_cast<unsigned long long>(capacity_mib));
+        ret = probe_root_directory();
+        const esp_err_t cleanup = esp_vfs_fat_sdcard_unmount(kMountPoint, card);
+        if (cleanup == ESP_OK) {
+            ESP_LOGI(TAG, "Unmounted");
+        } else {
+            s_cleanup_error = cleanup;
+            ESP_LOGE(TAG, "SD unmount failed: %s; restart before retrying SD",
+                     esp_err_to_name(cleanup));
+            if (ret == ESP_OK) {
+                ret = cleanup;
+            }
+        }
     } else {
         ESP_LOGE(TAG, "MicroSD mount failed: %s", esp_err_to_name(ret));
     }
 
-    esp_err_t free_ret = spi_bus_free(SPI2_HOST);
-    if (free_ret != ESP_OK) {
-        ESP_LOGW(TAG, "Free MicroSD SPI bus result: %s", esp_err_to_name(free_ret));
-    }
-
-    ret = configure_sd_idle_state();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Restore MicroSD idle state failed: %s", esp_err_to_name(ret));
+    const esp_err_t idle_result = configure_sd_idle_state();
+    if (idle_result != ESP_OK) {
+        ESP_LOGE(TAG, "Restore MicroSD idle state failed: %s", esp_err_to_name(idle_result));
     }
     ESP_LOGI(TAG, "=== MicroSD Demo End ===");
+    return ret != ESP_OK ? ret : idle_result;
 }

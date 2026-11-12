@@ -1,5 +1,4 @@
-#include <cstdio>
-
+#include "demo_board.h"
 #include "demo_battery.h"
 #include "demo_buttons.h"
 #include "demo_buzzer.h"
@@ -11,157 +10,78 @@
 #include "demo_sdcard.h"
 #include "demo_sht40.h"
 #include "demo_touch.h"
-#include "driver/gpio.h"
-#include "driver/i2c_master.h"
-#include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "pin_config.h"
 
-static const char *TAG = "main";
-static i2c_master_bus_handle_t sensor_bus = nullptr;
-static i2c_master_bus_handle_t touch_bus = nullptr;
-
-static void configure_log_levels()
+namespace {
+constexpr char kTag[] = "peripherals";
+unsigned s_ok = 0, s_failed = 0;
+void report(const char *name, esp_err_t result)
+{
+    if (result == ESP_OK) {
+        ++s_ok;
+        ESP_LOGI(kTag, "%s: OK", name);
+    } else {
+        ++s_failed;
+        ESP_LOGW(kTag, "%s: unavailable/failed (%s)", name, esp_err_to_name(result));
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+}
+} // namespace
+extern "C" void app_main()
 {
     esp_log_level_set("gpio", ESP_LOG_WARN);
     esp_log_level_set("sdspi_transaction", ESP_LOG_WARN);
-    esp_log_level_set("button", ESP_LOG_WARN);
-}
-
-static void init_gpio_isr_service()
-{
-    esp_err_t ret = gpio_install_isr_service(0);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "GPIO ISR service install failed: %s", esp_err_to_name(ret));
+    ESP_LOGI(kTag, "============================================================");
+    ESP_LOGI(kTag, "  reTerminal Sticky | Onboard Peripheral Examples");
+    ESP_LOGI(kTag, "============================================================");
+    const esp_err_t board = demo_board_init();
+    if (board != ESP_OK) {
+        ESP_LOGE(kTag, "Board initialization failed: %s; sequence stopped", esp_err_to_name(board));
+        return;
     }
-}
-
-static void init_sensor_i2c_bus()
-{
-    i2c_master_bus_config_t bus_cfg = {};
-    bus_cfg.i2c_port = I2C_NUM_1;
-    bus_cfg.sda_io_num = static_cast<gpio_num_t>(PIN_SENSOR_SDA);
-    bus_cfg.scl_io_num = static_cast<gpio_num_t>(PIN_SENSOR_SCL);
-    bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
-    bus_cfg.glitch_ignore_cnt = 7;
-    bus_cfg.flags.enable_internal_pullup = 1;
-    esp_err_t ret = i2c_new_master_bus(&bus_cfg, &sensor_bus);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Sensor I2C bus initialization failed: %s", esp_err_to_name(ret));
+    const auto sensor_bus = demo_board_sensor_bus();
+    // Get startup waveform temperature, then show a visible notice before other demos.
+    float temperature_c = 0;
+    const esp_err_t temperature = demo_sht40_run(sensor_bus, &temperature_c);
+    report("SHT40", temperature);
+    seeed_epaper_panel_handle_t panel = nullptr;
+    report("Display startup",
+           demo_epaper_init(&panel, temperature == ESP_OK ? &temperature_c : nullptr));
+    esp_err_t result = demo_buzzer_init();
+    report("Buzzer", result == ESP_OK ? demo_buzzer_run() : result);
+    const esp_err_t buttons = demo_buttons_init();
+    report("Buttons", buttons);
+    result = demo_charger_init();
+    report("Charger", result == ESP_OK ? demo_charger_run() : result);
+    report("RTC", demo_rtc_run(sensor_bus));
+    report("Battery", demo_battery_run(sensor_bus));
+    report("IMU", demo_imu_run(sensor_bus));
+    report("Microphone", demo_microphone_run());
+    report("MicroSD", demo_sdcard_run());
+    const esp_err_t display_ready = demo_epaper_run(panel);
+    report("E-paper", display_ready);
+    // A valid handle does not mean the touch page was displayed successfully.
+    // Keep testing touch independently, without drawing on an unprepared display.
+    report("Touch", demo_touch_run(demo_board_touch_bus(),
+                                   display_ready == ESP_OK ? panel : nullptr));
+    if (panel != nullptr) {
+        // One recovery attempt only, including after a display/touch failure.
+        const esp_err_t finished = demo_epaper_finish(panel, s_failed != 0);
+        report("Finished notice", finished);
+        if (finished == ESP_OK) {
+            // Only a successful monochrome frame establishes a known standby state.
+            report("Display standby", demo_epaper_standby(panel));
+        } else {
+            ESP_LOGW(kTag, "Display standby skipped: finished frame failed; panel power retained");
+        }
     }
-}
-
-static void init_touch_i2c_bus()
-{
-    i2c_master_bus_config_t bus_cfg = {};
-    bus_cfg.i2c_port = I2C_NUM_0;
-    bus_cfg.sda_io_num = static_cast<gpio_num_t>(PIN_TOUCH_SDA);
-    bus_cfg.scl_io_num = static_cast<gpio_num_t>(PIN_TOUCH_SCL);
-    bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
-    bus_cfg.glitch_ignore_cnt = 7;
-    bus_cfg.flags.enable_internal_pullup = 1;
-    esp_err_t ret = i2c_new_master_bus(&bus_cfg, &touch_bus);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Touch I2C bus initialization failed: %s", esp_err_to_name(ret));
+    ESP_LOGI(kTag, "Sequence finished: %u OK, %u unavailable/failed; inspect per-demo logs", s_ok,
+             s_failed);
+    if (buttons == ESP_OK) {
+        ESP_LOGI(kTag, "UP/DOWN/OK callbacks remain active (logs only)");
     }
-}
-
-static void power_on_hold()
-{
-    gpio_config_t io_cfg = {};
-    io_cfg.pin_bit_mask = (1ULL << PIN_POWER_HOLD) | (1ULL << PIN_POWER_LOCK);
-    io_cfg.mode = GPIO_MODE_OUTPUT;
-    io_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
-    io_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&io_cfg);
-    gpio_set_level(static_cast<gpio_num_t>(PIN_POWER_HOLD), 1);
-    gpio_set_level(static_cast<gpio_num_t>(PIN_POWER_LOCK), 1);
-}
-
-extern "C" void app_main(void)
-{
-    configure_log_levels();
-
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  reTerminal Sticky Peripheral Demo");
-    ESP_LOGI(TAG, "========================================");
-
-    // Step 1: Power hold
-    power_on_hold();
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    init_gpio_isr_service();
-
-    init_sensor_i2c_bus();
-    init_touch_i2c_bus();
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Step 2: Buzzer demo
-    ESP_LOGI(TAG, "");
-    demo_buzzer_init();
-    demo_buzzer_run();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 3: Buttons demo
-    ESP_LOGI(TAG, "");
-    demo_buttons_init();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 4: Charger demo
-    ESP_LOGI(TAG, "");
-    demo_charger_init();
-    demo_charger_run();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 5: RTC demo
-    ESP_LOGI(TAG, "");
-    demo_rtc_run(sensor_bus);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 6: Battery demo
-    ESP_LOGI(TAG, "");
-    demo_battery_run(sensor_bus);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 7: SHT40 demo
-    ESP_LOGI(TAG, "");
-    demo_sht40_run(sensor_bus);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 8: IMU demo
-    ESP_LOGI(TAG, "");
-    demo_imu_run(sensor_bus);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 9: PDM microphone demo
-    ESP_LOGI(TAG, "");
-    demo_microphone_run();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 10: MicroSD demo
-    ESP_LOGI(TAG, "");
-    demo_sdcard_run();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 11: E-paper demo
-    ESP_LOGI(TAG, "");
-    seeed_epaper_panel_handle_t epaper_panel = demo_epaper_init();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Step 12: Touch demo
-    ESP_LOGI(TAG, "");
-    demo_touch_run(touch_bus, epaper_panel);
-
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  All demos completed!");
-    ESP_LOGI(TAG, "  E-paper gray4 and touch drawing demos completed.");
-    ESP_LOGI(TAG, "  Buttons remain active via callbacks.");
-    ESP_LOGI(TAG, "  Press UP/DOWN/OK to see log output.");
-    ESP_LOGI(TAG, "========================================");
-
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

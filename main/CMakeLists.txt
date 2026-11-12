@@ -1,11 +1,13 @@
 idf_component_register(
     SRCS "main.cpp"
+         "demo_board.cpp"
          "demo_buzzer.cpp"
          "demo_buttons.cpp"
          "demo_rtc.cpp"
          "demo_battery.cpp"
          "demo_charger.cpp"
          "demo_epaper.cpp"
+         "demo_font.cpp"
          "demo_touch.cpp"
          "demo_sht40.cpp"
          "demo_imu.cpp"

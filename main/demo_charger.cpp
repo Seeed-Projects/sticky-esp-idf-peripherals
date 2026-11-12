@@ -1,61 +1,57 @@
 #include "demo_charger.h"
-
 #include "driver/gpio.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "pin_config.h"
-
-static const char *TAG = "demo_charger";
-
-void demo_charger_init()
+namespace {
+constexpr char kTag[] = "demo_charger";
+bool s_ready = false;
+} // namespace
+esp_err_t demo_charger_init()
 {
-    // EN_BAT_CHGn (GPIO39): output, controls BQ25616 charger enable (active low)
-    // LOW = charger enabled, HIGH = charger disabled
-    gpio_config_t chg_en_cfg = {};
-    chg_en_cfg.pin_bit_mask = 1ULL << PIN_BAT_CHG_EN;
-    chg_en_cfg.mode = GPIO_MODE_OUTPUT;
-    chg_en_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
-    chg_en_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&chg_en_cfg);
-
-    // CHARGE_STATE (GPIO40): input, reads BQ25616 charge status
-    gpio_config_t chg_state_cfg = {};
-    chg_state_cfg.pin_bit_mask = 1ULL << PIN_CHARGE_STATE;
-    chg_state_cfg.mode = GPIO_MODE_INPUT;
-    chg_state_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-    chg_state_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&chg_state_cfg);
+    if (s_ready) {
+        return ESP_OK;
+    }
+    gpio_config_t config = {};
+    config.pin_bit_mask = 1ULL << PIN_BAT_CHG_EN;
+    config.mode = GPIO_MODE_OUTPUT;
+    ESP_RETURN_ON_ERROR(gpio_config(&config), kTag, "configure charger enable");
+    ESP_RETURN_ON_ERROR(gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 0), kTag,
+                        "enable charger");
+    config = {};
+    config.pin_bit_mask = 1ULL << PIN_CHARGE_STATE;
+    config.mode = GPIO_MODE_INPUT;
+    config.pull_up_en = GPIO_PULLUP_ENABLE;
+    const esp_err_t result = gpio_config(&config);
+    s_ready = result == ESP_OK;
+    return result;
 }
-
-void demo_charger_run()
+esp_err_t demo_charger_run()
 {
-    ESP_LOGI(TAG, "=== Charger Demo Start ===");
-
-    // Enable charger (active low: set LOW to enable)
-    gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 0);
+    if (!s_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_RETURN_ON_ERROR(gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 0), kTag,
+                        "enable charger");
     vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Read charge state several times
-    for (int i = 0; i < 5; i++) {
-        int state = gpio_get_level(static_cast<gpio_num_t>(PIN_CHARGE_STATE));
-        if (i == 0) {
-            ESP_LOGI(TAG, "Charge state: %s", state ? "not charging" : "charging");
-        }
+    ESP_LOGI(kTag, "Charger enabled; GPIO40 raw status=%d (not a measured charging current)",
+             gpio_get_level(static_cast<gpio_num_t>(PIN_CHARGE_STATE)));
+    for (int i = 0; i < 5; ++i) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-
-    // Demonstrate disabling charger
-    gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 1);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Read charge state after disabling
-    int state = gpio_get_level(static_cast<gpio_num_t>(PIN_CHARGE_STATE));
-    ESP_LOGI(TAG, "Charge state while disabled: %s", state ? "not charging" : "charging");
-
-    // Re-enable charger for normal operation
-    gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 0);
-    ESP_LOGI(TAG, "Charger restored to normal operation");
-
-    ESP_LOGI(TAG, "=== Charger Demo End ===");
+    const esp_err_t disabled = gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 1);
+    if (disabled == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        ESP_LOGI(kTag, "Charger disabled; GPIO40 raw status=%d",
+                 gpio_get_level(static_cast<gpio_num_t>(PIN_CHARGE_STATE)));
+    }
+    const esp_err_t restored = gpio_set_level(static_cast<gpio_num_t>(PIN_BAT_CHG_EN), 0);
+    if (restored != ESP_OK) {
+        ESP_LOGE(kTag, "Restore charger enable failed: %s", esp_err_to_name(restored));
+    } else {
+        ESP_LOGI(kTag, "Charger enable restored (active low)");
+    }
+    return disabled != ESP_OK ? disabled : restored;
 }

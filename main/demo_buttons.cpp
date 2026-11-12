@@ -11,6 +11,7 @@ static const char *TAG = "demo_buttons";
 static button_handle_t s_btn_up = nullptr;
 static button_handle_t s_btn_down = nullptr;
 static button_handle_t s_btn_ok = nullptr;
+static bool s_ready = false;
 
 // Maps a button event enum to a readable log string.
 // 将按钮事件枚举转换成适合日志显示的英文名称。
@@ -53,16 +54,19 @@ static void button_event_callback(void *button_handle, void *usr_data)
     ESP_LOGI(TAG, "Button [%s] event: %s", label, button_event_name(event));
 }
 
-static void register_button_event(button_handle_t handle, button_event_t event, const char *label)
+static esp_err_t register_button_event(button_handle_t handle, button_event_t event,
+                                       const char *label)
 {
-    esp_err_t ret = iot_button_register_cb(handle, event, nullptr, button_event_callback, const_cast<char *>(label));
+    esp_err_t ret = iot_button_register_cb(handle, event, nullptr, button_event_callback,
+                                           const_cast<char *>(label));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Register %s callback for %s failed: %s",
-                 button_event_name(event), label, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Register %s callback for %s failed: %s", button_event_name(event), label,
+                 esp_err_to_name(ret));
     }
+    return ret;
 }
 
-static void create_gpio_button(const char *label, int gpio_num, button_handle_t *handle)
+static esp_err_t create_gpio_button(const char *label, int gpio_num, button_handle_t *handle)
 {
     button_config_t btn_cfg = {};
     btn_cfg.long_press_time = 2000;
@@ -77,23 +81,61 @@ static void create_gpio_button(const char *label, int gpio_num, button_handle_t 
     esp_err_t ret = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, handle);
     if (ret != ESP_OK || *handle == nullptr) {
         ESP_LOGE(TAG, "Failed to create %s button: %s", label, esp_err_to_name(ret));
-        return;
+        return ret != ESP_OK ? ret : ESP_FAIL;
     }
 
-    register_button_event(*handle, BUTTON_PRESS_DOWN, label);
-    register_button_event(*handle, BUTTON_PRESS_UP, label);
-    register_button_event(*handle, BUTTON_SINGLE_CLICK, label);
-    register_button_event(*handle, BUTTON_LONG_PRESS_START, label);
+    const button_event_t events[] = {BUTTON_PRESS_DOWN, BUTTON_PRESS_UP, BUTTON_SINGLE_CLICK,
+                                     BUTTON_LONG_PRESS_START};
+    for (button_event_t event : events) {
+        ret = register_button_event(*handle, event, label);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+    return ESP_OK;
 }
 
-void demo_buttons_init()
+static esp_err_t cleanup_buttons()
 {
-    ESP_LOGI(TAG, "=== Buttons Demo Start ===");
-
-    create_gpio_button("UP", PIN_BTN_UP, &s_btn_up);
-    create_gpio_button("DOWN", PIN_BTN_DOWN, &s_btn_down);
-    create_gpio_button("OK", PIN_BTN_OK, &s_btn_ok);
-
-    ESP_LOGI(TAG, "Buttons ready: UP, DOWN, OK (events remain active)");
-    ESP_LOGI(TAG, "=== Buttons Demo Ready ===");
+    esp_err_t result = ESP_OK;
+    button_handle_t *handles[] = {&s_btn_ok, &s_btn_down, &s_btn_up};
+    for (auto *handle : handles) {
+        if (*handle == nullptr) {
+            continue;
+        }
+        const esp_err_t cleanup = iot_button_delete(*handle);
+        if (cleanup == ESP_OK) {
+            *handle = nullptr;
+        } else {
+            ESP_LOGE(TAG, "Button cleanup failed: %s", esp_err_to_name(cleanup));
+            if (result == ESP_OK) {
+                result = cleanup;
+            }
+        }
+    }
+    return result;
+}
+esp_err_t demo_buttons_init()
+{
+    if (s_ready) {
+        return ESP_OK;
+    }
+    esp_err_t result = cleanup_buttons();
+    if (result != ESP_OK) {
+        return result;
+    }
+    result = create_gpio_button("UP", PIN_BTN_UP, &s_btn_up);
+    if (result == ESP_OK) {
+        result = create_gpio_button("DOWN", PIN_BTN_DOWN, &s_btn_down);
+    }
+    if (result == ESP_OK) {
+        result = create_gpio_button("OK/AI", PIN_BTN_OK, &s_btn_ok);
+    }
+    if (result != ESP_OK) {
+        cleanup_buttons();
+        return result;
+    }
+    s_ready = true;
+    ESP_LOGI(TAG, "Buttons ready: UP, DOWN, OK/AI (log callbacks only, no sleep action)");
+    return ESP_OK;
 }

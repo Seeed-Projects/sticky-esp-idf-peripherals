@@ -1,11 +1,16 @@
 #pragma once
-
 #include "epaper_panel.h"
-
-// Init SPI bus, create SSD1677 panel, clear screen (full refresh), show gray4 demo.
-// 初始化 SPI 总线、创建 SSD1677 面板、全刷清屏，并显示 gray4 演示。
-seeed_epaper_panel_handle_t demo_epaper_init(void);
-
-// Draw a filled dot (8x8 pixels) at the given coordinates using partial refresh.
-// 使用局部刷新在指定坐标绘制一个 8x8 像素的实心点。
-void demo_epaper_draw_dot(seeed_epaper_panel_handle_t panel, uint16_t x, uint16_t y);
+// Requires demo_board_init(). Caller borrows the panel; this module owns it.
+// 需先初始化板级总线；面板句柄借给调用者，由本模块持有。
+esp_err_t demo_epaper_init(seeed_epaper_panel_handle_t *panel,
+                           const float *temperature_c = nullptr);
+// Init shows the running notice; run shows Gray4 and then the touch target frame.
+esp_err_t demo_epaper_run(seeed_epaper_panel_handle_t panel);
+// Call after demo_touch_run returns; a finished sequence does not imply all checks passed.
+esp_err_t demo_epaper_finish(seeed_epaper_panel_handle_t panel, bool checks_failed);
+// Single owner task only: add pixels without I/O, then flush a batch once.
+esp_err_t demo_epaper_add_dot(seeed_epaper_panel_handle_t panel, uint16_t x, uint16_t y);
+esp_err_t demo_epaper_flush(seeed_epaper_panel_handle_t panel);
+esp_err_t demo_epaper_draw_dot(seeed_epaper_panel_handle_t panel, uint16_t x, uint16_t y);
+// Call after touch polling stops. Closes high voltage, keeps EPD_EN high.
+esp_err_t demo_epaper_standby(seeed_epaper_panel_handle_t panel);

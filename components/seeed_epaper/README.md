@@ -1,38 +1,37 @@
 # SEEED_EPAPER
 
-`SEEED_EPAPER` 是一个面向 ESP-IDF 的模块化墨水屏组件，当前先支持：
+ESP-IDF e-paper component for the reTerminal Sticky peripheral examples.
+MIT terms are in the root [LICENSE](../../LICENSE).
 
-- `UC8179`：reTerminal E1001
-- `SSD1677`：reTerminal E1005
+## Controllers and modes
 
-设计目标：
+Backends: UC8179, SSD1677, SSD2677. This example detects SSD1677 or SSD2677
+in `main/demo_epaper.cpp`. Both Sticky variants support monochrome
+full refresh, monochrome partial refresh, and four-level grayscale full refresh.
+Query `seeed_epaper_panel_get_info()` for the selected controller's capabilities.
 
-- SPI 总线由外部创建，组件只接收 `spi_device_handle_t`
-- `panel` 核心与 `driver` 控制器实现分层，后续加新屏只需补 driver
-- 对外统一支持整屏刷新、任意区域局刷、1bpp 原生输入和 4/8/16bit 转 1bpp
-- 为后续灰度 / 彩色扩展预留能力描述与像素格式枚举
+## Integration
 
-## 对外 API
+The caller owns the SPI bus and device handle supplied to `seeed_epaper_new_panel()`.
+The component handles GPIO, SPI commands, pixel conversion, and refresh sessions.
 
-- `seeed_epaper_new_panel()`：创建面板句柄
-- `seeed_epaper_panel_prepare()`：准备一次 full / partial 会话
-- `seeed_epaper_panel_write_bitmap()`：写入一块区域到显存
-- `seeed_epaper_panel_commit()`：触发物理刷新
-- `seeed_epaper_panel_refresh_area()`：单次区域写入并刷新
-- `seeed_epaper_panel_sleep()`：进入休眠
+- `seeed_epaper_panel_prepare()`: prepare a refresh session.
+- `seeed_epaper_panel_write_bitmap()`: write monochrome or converted pixels.
+- `seeed_epaper_panel_write_bitmap_gray4()`: write packed 2bpp Gray4 data.
+- `seeed_epaper_panel_commit()`: drive the physical refresh.
+- `seeed_epaper_panel_standby()` / `sleep()`: enter controller power states.
 
-推荐给 LVGL9 的接法：
+See [epaper_panel.h](epaper_panel.h) for signatures, formats, and mode enums.
+Gray4 stores four pixels per byte, most significant pixel first, and uses a
+full-frame refresh. Partial updates do not guarantee small SPI transfers;
+SSD2677 can build a full-screen comparison frame internally.
 
-1. `flush_cb` 中对每个 chunk 调 `prepare + write_bitmap`
-2. `lv_display_flush_is_last(display)` 为真时再 `commit`
-3. 首帧走 `FULL`，后续走 `PARTIAL`
-4. `LV_COLOR_DEPTH=1` 时直接传 `MONO1_MSB`
-5. `LV_COLOR_DEPTH=8/16` 时传 `GRAY8` / `RGB565`，组件内部阈值转换为 1bpp
+For the minimal framebuffer example, detection, startup temperature and refresh
+recovery policy, see `main/demo_epaper.cpp` and the [project README](../../README.md).
 
-## 目录结构
+## Source layout
 
-- `epaper_panel.h`：统一公共接口
-- `epaper_panel.c`：GPIO / SPI / 像素转换 / 会话管理
-- `driver/uc8179.c`：UC8179 控制器实现
-- `driver/ssd1677.c`：SSD1677 控制器实现
-
+- `epaper_panel.h`: public API and formats.
+- `epaper_panel.c`: shared GPIO/SPI, pixel conversion and sessions.
+- `epaper_panel_priv.h`: internal backend interface.
+- `driver/uc8179.c`, `driver/ssd1677.c`, `driver/ssd2677.c`: controller backends.

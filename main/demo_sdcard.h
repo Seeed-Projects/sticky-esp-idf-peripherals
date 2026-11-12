@@ -1,3 +1,6 @@
 #pragma once
+#include "esp_err.h"
 
-void demo_sdcard_run();
+// Call from one task after demo_board_init(); check esp_err_t results.
+
+esp_err_t demo_sdcard_run();
