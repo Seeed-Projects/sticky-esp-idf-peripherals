@@ -49,7 +49,7 @@ void demo_touch_transform_coordinate(uint16_t touch_x, uint16_t touch_y, uint16_
 }
 
 namespace {
-constexpr TickType_t kDuration = pdMS_TO_TICKS(30000);
+constexpr TickType_t kDuration = pdMS_TO_TICKS(kDemoTouchDurationSeconds * 1000);
 constexpr TickType_t kPollInterval = pdMS_TO_TICKS(20);
 constexpr UBaseType_t kPointCapacity = 128;
 struct Dot {
@@ -69,7 +69,7 @@ void capture_task(void *)
 {
     GTPoint previous[GT911::kMaxTouchPoints] = {};
     int8_t previous_count = 0;
-    uint32_t last_remaining_seconds = 31;
+    uint32_t last_remaining_seconds = kDemoTouchDurationSeconds + 1;
     while (!s_stop.load() && xTaskGetTickCount() - s_start < kDuration) {
         // Count down in the capture task so blocking display refreshes cannot
         // hide progress. No extra delay is introduced for logging.
@@ -203,7 +203,8 @@ esp_err_t demo_touch_run(i2c_master_bus_handle_t touch_bus,
     s_error.store(ESP_OK);
     s_queued = s_dropped = 0;
     s_active = true;
-    ESP_LOGI(TAG, "Touch capture: 30 seconds, 20ms poll, queue=128; one coordinate line per press");
+    ESP_LOGI(TAG, "Touch capture: %u seconds, 20ms poll, queue=128; one coordinate line per press",
+             kDemoTouchDurationSeconds);
     s_start = xTaskGetTickCount();
     if (xTaskCreate(capture_task, "touch_capture", 4096, nullptr, 4, nullptr) != pdPASS) {
         release_resources();

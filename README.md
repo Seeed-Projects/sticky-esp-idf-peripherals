@@ -4,7 +4,7 @@
 
 Minimal ESP-IDF examples for the onboard peripherals of Seeed Studio reTerminal Sticky. One firmware automatically selects the SSD1677 or SSD2677 e-paper driver. Each peripheral has a small `demo_xxx.cpp/.h` pair that developers can read, copy and extend, including with AI coding tools.
 
-The application runs the demos sequentially. It has no page framework, application event queue, network service or deep-sleep workflow. UP, DOWN and OK/AI buttons print events; long press does not put this example to sleep. This is a minimal peripheral reference project; its example APIs require a single owner task as described below.
+The application runs the peripheral demos sequentially and ends with a button test and two optional power tests. Its example APIs require a single owner task as described below.
 
 ## Requirements and build
 
@@ -30,7 +30,6 @@ Replace `PORT` with the serial port, for example `COM8` on Windows. Exit the mon
 | Environment | `demo_sht40` | CRC-checked temperature/humidity at `0x44`; keep valid startup temperature for the display |
 | Display startup | `demo_epaper` | Detect the controller and show “Testing peripherals” before the remaining peripheral demos |
 | Buzzer | `demo_buzzer` | Four short PWM tones |
-| Buttons | `demo_buttons` | Active-low UP/DOWN/OK callbacks for press, release, single click and 2-second long press |
 | Charger | `demo_charger` | Enable, briefly disable, restore active-low charger enable; print raw GPIO40 status |
 | RTC | `demo_rtc` | Probe PCF8563 at `0x51`, disable CLKOUT and read valid stored time; never write a demo date |
 | Battery | `demo_battery` | Read BQ27220 at `0x55`: voltage, current, SOC, SOH, capacity, temperature, cycle count and status |
@@ -38,8 +37,9 @@ Replace `PORT` with the serial port, for example `COM8` on Windows. Exit the mon
 | Microphone | `demo_microphone` | 16 kHz / 16-bit mono PDM; ten reads of up to 512 samples, five RMS log values |
 | MicroSD | `demo_sdcard` | Mount, report capacity, probe one root directory entry, unmount; empty cards work; no writes or auto-format |
 | Display | `demo_epaper` | Four grayscale bands for five seconds, then a monochrome TOUCH TEST notice and corner targets |
-| Touch | `demo_touch` | Capture GT911 for 30 seconds in a separate task; queue and batch 8×8 black dots; detailed coordinates at DEBUG |
-| Finish / idle | `demo_epaper` | Show “Demo complete” and explain that touch has ended (check serial on errors); enter standby only if this frame succeeds; keep EPD_EN high and buttons active |
+| Touch | `demo_touch` | Capture GT911 for 15 seconds in a separate task; queue and batch 8×8 black dots; detailed coordinates at DEBUG |
+| Finish / idle | `demo_epaper` | Show “Demo complete”; enter display standby only if this frame succeeds |
+| Buttons / power | `demo_buttons`, `demo_power` | Test all three buttons for 10 seconds, then enable the power actions below |
 
 The final summary counts successful and unavailable/failed operations. Missing optional SD media is reported; an empty root directory succeeds. Board power/SPI initialization failure stops the sequence; an unavailable I2C bus or peripheral is reported and the other demos continue. If display initialization or touch-page preparation fails, touch runs in capture/log-only mode without drawing. The completion frame is attempted once if a panel handle is available. If that refresh fails, standby is explicitly skipped; skipped standby is not counted as successful. A successful touch result means its polling run completed; it does not prove that a finger touched the screen.
 
@@ -87,11 +87,20 @@ A partial refresh submits a complete comparison frame, not a guaranteed small SP
 
 A successful startup SHT40 reading sets the external waveform temperature once. Otherwise the component retains its internal-temperature path. Temperature is not sampled on every refresh. Touch preserves the portrait/logical-to-native framebuffer mapping of this example; the touch coordinate transform is unchanged. Status text uses the same 180-degree logical-to-panel conversion as Dashboard, without importing Canvas or a page framework. The GT911 component distinguishes no new report from a release report. A separate task polls about every 20 ms plus I2C time, even while the owner task refreshes the screen. A fixed 128-point queue drops newest samples when full and reports the drop count; repeated coordinates for the same touch ID are suppressed. The owner drains at most 128 points per batch and refreshes once, without adding the old 200 ms delay. This improves capture, not the panel waveform duration: screen updates remain visibly delayed, and this is not a continuous pen/line drawing application. A new touch ID prints one INFO line with raw and screen coordinates; holding/moving does not repeat that line until release and a new press. Detailed motion coordinates use `ESP_LOGD` and are off by default; capture never depends on logging. To see them, compile with DEBUG maximum verbosity and enable DEBUG for `demo_touch`.
 
-The capture task prints the remaining seconds independently of display refresh. Successful touch refresh timing is DEBUG only; startup refresh results and refresh errors remain visible. Capture stops after 30 seconds. The owner waits for the task's stop acknowledgement before releasing its controller/queue, then flushes at most one final batch. A slow in-flight refresh may extend the overall demo. If acknowledgement times out, resources stay alive, touch cannot be restarted without reboot, and an error is returned.
+The capture task prints the remaining seconds independently of display refresh. Successful touch refresh timing is DEBUG only; startup refresh results and refresh errors remain visible. Capture stops after 15 seconds. The owner waits for the task's stop acknowledgement before releasing its controller/queue, then flushes at most one final batch. A slow in-flight refresh may extend the overall demo. If acknowledgement times out, resources stay alive, touch cannot be restarted without reboot, and an error is returned.
 
-After the completion frame succeeds, standby requests controller high-voltage shutdown. If it fails, the application skips standby because the display state is uncertain. It does not retry indefinitely or cut panel power; individual driver calls can still wait for their configured timeout. EPD_EN remains high. Module power, controller high voltage, panel sleep and ESP32 deep sleep are different states; this demo does not enter ESP32 deep sleep. Do not abruptly cut EPD_EN as a substitute for the controller sequence.
+The completion frame enters display standby only after a successful refresh. Display standby keeps EPD_EN high and does not put the ESP32 to sleep.
 
-The bundled GT911 driver is retained from the official firmware. This example is intended for single-finger touch diagnostics; multi-finger tracking has not been validated. The queue drop count covers application queue overflow only, not all possible missed controller reports.
+## Button and power tests
+
+The 10-second button window logs events only. Once the power menu appears, release all keys before starting a new press. Hold UP for about one second for ESP32 deep sleep, or hold AI for about one second for board power-off. Preparation starts at the one-second threshold; the final transition waits for all keys to be released for 60 ms. DOWN does not initiate a power transition.
+
+- Deep sleep retains the board power latch. UP, DOWN and AI are configured as wake sources; wake runs the demo again from startup.
+- Power-off follows the official HOLD/LOCK sequence. On battery, press AI to power the board back on after shutdown. If external power keeps the board running, the example waits for key release and restarts once, as the official firmware does.
+- The application requires the active peripherals to finish and the SD card to be unmounted. It refreshes the final notice, puts the panel controller to sleep, and then disables the panel, touch, microphone and SD enables. If the transition fails after preparation, use reset to retry.
+- The external RTC is left running while backup power is available. Measure current separately on hardware; this example does not specify a shutdown current.
+
+The bundled GT911 driver is retained from the official firmware. This example demonstrates single-finger touch diagnostics. The queue drop count covers application queue overflow only, not all possible missed controller reports.
 
 ## Pin Map
 

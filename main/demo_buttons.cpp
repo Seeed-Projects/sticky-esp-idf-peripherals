@@ -1,8 +1,13 @@
 #include "demo_buttons.h"
 
+#include <atomic>
+
 #include "button_gpio.h"
+#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "iot_button.h"
 #include "pin_config.h"
 
@@ -12,6 +17,7 @@ static button_handle_t s_btn_up = nullptr;
 static button_handle_t s_btn_down = nullptr;
 static button_handle_t s_btn_ok = nullptr;
 static bool s_ready = false;
+static std::atomic<bool> s_log_events{true};
 
 // Maps a button event enum to a readable log string.
 // 将按钮事件枚举转换成适合日志显示的英文名称。
@@ -49,6 +55,9 @@ static const char *button_event_name(button_event_t event)
 
 static void button_event_callback(void *button_handle, void *usr_data)
 {
+    if (!s_log_events.load()) {
+        return;
+    }
     const char *label = static_cast<const char *>(usr_data);
     button_event_t event = iot_button_get_event(static_cast<button_handle_t>(button_handle));
     ESP_LOGI(TAG, "Button [%s] event: %s", label, button_event_name(event));
@@ -69,7 +78,7 @@ static esp_err_t register_button_event(button_handle_t handle, button_event_t ev
 static esp_err_t create_gpio_button(const char *label, int gpio_num, button_handle_t *handle)
 {
     button_config_t btn_cfg = {};
-    btn_cfg.long_press_time = 2000;
+    btn_cfg.long_press_time = 1000;
     btn_cfg.short_press_time = 180;
 
     button_gpio_config_t gpio_cfg = {};
@@ -93,6 +102,43 @@ static esp_err_t create_gpio_button(const char *label, int gpio_num, button_hand
         }
     }
     return ESP_OK;
+}
+
+esp_err_t demo_buttons_wait_power_request(DemoPowerMode &mode)
+{
+    if (!s_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_log_events.store(false);
+    constexpr TickType_t poll = pdMS_TO_TICKS(20);
+    constexpr TickType_t debounce = pdMS_TO_TICKS(60);
+    constexpr TickType_t hold = pdMS_TO_TICKS(1000);
+    TickType_t idle_since = xTaskGetTickCount();
+    TickType_t pressed_since = idle_since;
+    bool armed = false;
+    unsigned previous = 0;
+    while (true) {
+        const TickType_t now = xTaskGetTickCount();
+        const unsigned pressed =
+            (gpio_get_level(static_cast<gpio_num_t>(PIN_BTN_UP)) == 0 ? 1U : 0U) |
+            (gpio_get_level(static_cast<gpio_num_t>(PIN_BTN_OK)) == 0 ? 2U : 0U) |
+            (gpio_get_level(static_cast<gpio_num_t>(PIN_BTN_DOWN)) == 0 ? 4U : 0U);
+        if (pressed != previous) {
+            pressed_since = now;
+            idle_since = now;
+            previous = pressed;
+        }
+        if (pressed == 0 && now - idle_since >= debounce) {
+            armed = true;
+        } else if (armed && (pressed == 1 || pressed == 2) &&
+                   now - pressed_since >= hold) {
+            mode = pressed == 1 ? DemoPowerMode::DeepSleep : DemoPowerMode::Off;
+            return ESP_OK;
+        } else if (pressed != 0 && pressed != 1 && pressed != 2) {
+            armed = false;
+        }
+        vTaskDelay(poll);
+    }
 }
 
 static esp_err_t cleanup_buttons()

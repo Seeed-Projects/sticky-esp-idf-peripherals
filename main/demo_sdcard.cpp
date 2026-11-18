@@ -15,6 +15,11 @@
 
 static const char *TAG = "demo_sdcard";
 static esp_err_t s_cleanup_error = ESP_OK;
+
+bool demo_sdcard_can_power_down()
+{
+    return s_cleanup_error == ESP_OK;
+}
 static constexpr const char *kMountPoint = "/sdcard";
 
 // The MicroSD card and e-paper display share SPI2 SCK/MOSI/MISO.

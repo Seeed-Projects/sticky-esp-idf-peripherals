@@ -14,3 +14,6 @@ esp_err_t demo_epaper_flush(seeed_epaper_panel_handle_t panel);
 esp_err_t demo_epaper_draw_dot(seeed_epaper_panel_handle_t panel, uint16_t x, uint16_t y);
 // Call after touch polling stops. Closes high voltage, keeps EPD_EN high.
 esp_err_t demo_epaper_standby(seeed_epaper_panel_handle_t panel);
+esp_err_t demo_epaper_power_notice(seeed_epaper_panel_handle_t panel, const char *title,
+                                   const char *message, const char *hint);
+esp_err_t demo_epaper_sleep(seeed_epaper_panel_handle_t panel);

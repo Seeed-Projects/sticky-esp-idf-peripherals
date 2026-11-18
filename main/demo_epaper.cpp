@@ -1,5 +1,7 @@
 #include "demo_epaper.h"
 #include "demo_font.h"
+#include "demo_touch.h"
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include "driver/gpio.h"
@@ -142,7 +144,10 @@ void touch_frame()
     status_header("TOUCH TEST");
     status_text(126, "Tap or move your finger", 2);
     status_rect(40, 410, 720, 1);
-    status_text(438, "30-second test / Countdown in serial log", 2);
+    char hint[64];
+    std::snprintf(hint, sizeof(hint), "%u-second test / Countdown in serial log",
+                  kDemoTouchDurationSeconds);
+    status_text(438, hint, 2);
     // Simple corner targets; the whole screen remains touchable.
     for (int x : {84, 716}) {
         for (int y : {190, 370}) {
@@ -352,6 +357,22 @@ esp_err_t demo_epaper_draw_dot(seeed_epaper_panel_handle_t panel, uint16_t x, ui
 {
     const esp_err_t result = demo_epaper_add_dot(panel, x, y);
     return result == ESP_OK ? demo_epaper_flush(panel) : result;
+}
+
+esp_err_t demo_epaper_power_notice(seeed_epaper_panel_handle_t panel, const char *title,
+                                   const char *message, const char *hint)
+{
+    if (!s_ready || panel != s_panel) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    status_frame(title, message, hint, "");
+    return refresh(SEEED_EPAPER_REFRESH_FULL);
+}
+
+esp_err_t demo_epaper_sleep(seeed_epaper_panel_handle_t panel)
+{
+    const esp_err_t result = demo_epaper_standby(panel);
+    return result == ESP_OK ? seeed_epaper_panel_sleep(panel) : result;
 }
 
 esp_err_t demo_epaper_standby(seeed_epaper_panel_handle_t panel)

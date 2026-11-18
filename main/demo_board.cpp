@@ -1,4 +1,5 @@
 #include "demo_board.h"
+#include "demo_power.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
@@ -40,8 +41,13 @@ esp_err_t demo_board_init()
     if (s_ready) {
         return ESP_OK;
     }
+    ESP_RETURN_ON_ERROR(gpio_set_level(static_cast<gpio_num_t>(PIN_POWER_HOLD), 1),
+                        kTag, "preload power hold");
+    ESP_RETURN_ON_ERROR(gpio_set_level(static_cast<gpio_num_t>(PIN_POWER_LOCK), 1),
+                        kTag, "preload power lock");
     ESP_RETURN_ON_ERROR(output(PIN_POWER_HOLD, 1), kTag, "power hold");
     ESP_RETURN_ON_ERROR(output(PIN_POWER_LOCK, 1), kTag, "power lock");
+    ESP_RETURN_ON_ERROR(demo_power_release_holds(), kTag, "release retained outputs");
     // Deselect both devices before SPI clocks. SD_EN is active high.
     ESP_RETURN_ON_ERROR(output(PIN_SD_CS, 1), kTag, "SD CS");
     ESP_RETURN_ON_ERROR(output(PIN_SD_EN, 1), kTag, "SD power");

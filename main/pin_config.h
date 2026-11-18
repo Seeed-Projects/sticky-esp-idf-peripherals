@@ -4,6 +4,7 @@
 #define PIN_POWER_BTN 4
 #define PIN_POWER_HOLD 45
 #define PIN_POWER_LOCK 46
+#define PIN_EXTERNAL_POWER 9
 // Battery charger BQ25616
 #define PIN_BAT_CHG_EN 39   // EN_BAT_CHGn, active low
 #define PIN_CHARGE_STATE 40 // Charge status input

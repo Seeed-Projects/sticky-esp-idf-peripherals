@@ -6,6 +6,8 @@
 #include "driver/i2c_master.h"
 #include "epaper_panel.h"
 
+inline constexpr unsigned kDemoTouchDurationSeconds = 15;
+
 void demo_touch_transform_coordinate(uint16_t touch_x, uint16_t touch_y, uint16_t &display_x,
                                      uint16_t &display_y);
 
